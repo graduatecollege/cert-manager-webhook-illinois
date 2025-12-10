@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strings"
@@ -36,6 +37,7 @@ func main() {
 // infobloxDNSProviderSolver implements the provider-specific logic needed to
 // 'present' an ACME challenge TXT record for Infoblox DNS provider.
 type infobloxDNSProviderSolver struct {
+	httpClient *http.Client
 }
 
 // infobloxDNSProviderConfig is a structure that is used to decode into when
@@ -76,13 +78,11 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error getting credentials: %v", err)
 	}
 
-	client := c.newHTTPClient(cfg)
-
 	// Extract the record name from the FQDN
 	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
 
 	// Check if record already exists
-	existingRecords, err := c.getTXTRecords(client, cfg, username, password, recordName)
+	existingRecords, err := c.getTXTRecords(cfg, username, password, recordName)
 	if err != nil {
 		return fmt.Errorf("error checking existing records: %v", err)
 	}
@@ -96,7 +96,7 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 	}
 
 	// Create the TXT record
-	err = c.createTXTRecord(client, cfg, username, password, recordName, ch.Key)
+	err = c.createTXTRecord(cfg, username, password, recordName, ch.Key)
 	if err != nil {
 		return fmt.Errorf("error creating TXT record: %v", err)
 	}
@@ -117,13 +117,11 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error getting credentials: %v", err)
 	}
 
-	client := c.newHTTPClient(cfg)
-
 	// Extract the record name from the FQDN
 	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
 
 	// Get existing records
-	existingRecords, err := c.getTXTRecords(client, cfg, username, password, recordName)
+	existingRecords, err := c.getTXTRecords(cfg, username, password, recordName)
 	if err != nil {
 		return fmt.Errorf("error getting existing records: %v", err)
 	}
@@ -131,7 +129,7 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 	// Delete only the record with the matching key
 	for _, record := range existingRecords {
 		if record.Text == ch.Key {
-			err = c.deleteTXTRecord(client, cfg, username, password, record.Ref)
+			err = c.deleteTXTRecord(cfg, username, password, record.Ref)
 			if err != nil {
 				return fmt.Errorf("error deleting TXT record: %v", err)
 			}
@@ -147,7 +145,18 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 
 // Initialize will be called when the webhook first starts.
 func (c *infobloxDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
-	// No initialization needed - credentials are read from mounted files
+	// Create HTTP client with cookie jar for session persistence
+	// The Infoblox API returns an "ibapauth" cookie after the first authentication
+	// which speeds up subsequent requests
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return fmt.Errorf("error creating cookie jar: %v", err)
+	}
+
+	c.httpClient = &http.Client{
+		Jar: jar,
+	}
+
 	return nil
 }
 
@@ -207,20 +216,18 @@ func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig
 	return username, password, nil
 }
 
-// newHTTPClient creates a new HTTP client with optional TLS verification skip
-func (c *infobloxDNSProviderSolver) newHTTPClient(cfg infobloxDNSProviderConfig) *http.Client {
-	if cfg.SkipTLSVerify {
+// getHTTPClient returns the HTTP client, optionally configuring TLS verification skip
+func (c *infobloxDNSProviderSolver) getHTTPClient(cfg infobloxDNSProviderConfig) *http.Client {
+	if cfg.SkipTLSVerify && c.httpClient.Transport == nil {
 		// WARNING: InsecureSkipVerify disables TLS certificate validation
 		// This creates a security vulnerability allowing man-in-the-middle attacks
 		// Only use this for testing purposes with self-signed certificates
 		log.Printf("WARNING: TLS certificate verification is disabled")
-		return &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+		c.httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
 	}
-	return http.DefaultClient
+	return c.httpClient
 }
 
 // InfobloxTXTRecord represents a TXT record in Infoblox
@@ -233,7 +240,8 @@ type InfobloxTXTRecord struct {
 }
 
 // getTXTRecords retrieves existing TXT records for a given name
-func (c *infobloxDNSProviderSolver) getTXTRecords(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name string) ([]InfobloxTXTRecord, error) {
+func (c *infobloxDNSProviderSolver) getTXTRecords(cfg infobloxDNSProviderConfig, username, password, name string) ([]InfobloxTXTRecord, error) {
+	client := c.getHTTPClient(cfg)
 	// URL encode parameters to prevent injection attacks
 	requestURL := fmt.Sprintf("https://%s/wapi/%s/record:txt?name=%s&view=%s",
 		cfg.Host, cfg.Version, url.QueryEscape(name), url.QueryEscape(cfg.View))
@@ -269,7 +277,8 @@ func (c *infobloxDNSProviderSolver) getTXTRecords(client *http.Client, cfg infob
 }
 
 // createTXTRecord creates a new TXT record in Infoblox
-func (c *infobloxDNSProviderSolver) createTXTRecord(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name, text string) error {
+func (c *infobloxDNSProviderSolver) createTXTRecord(cfg infobloxDNSProviderConfig, username, password, name, text string) error {
+	client := c.getHTTPClient(cfg)
 	url := fmt.Sprintf("https://%s/wapi/%s/record:txt", cfg.Host, cfg.Version)
 
 	record := InfobloxTXTRecord{
@@ -310,7 +319,8 @@ func (c *infobloxDNSProviderSolver) createTXTRecord(client *http.Client, cfg inf
 }
 
 // deleteTXTRecord deletes a TXT record from Infoblox using its reference
-func (c *infobloxDNSProviderSolver) deleteTXTRecord(client *http.Client, cfg infobloxDNSProviderConfig, username, password, ref string) error {
+func (c *infobloxDNSProviderSolver) deleteTXTRecord(cfg infobloxDNSProviderConfig, username, password, ref string) error {
+	client := c.getHTTPClient(cfg)
 	url := fmt.Sprintf("https://%s/wapi/%s/%s", cfg.Host, cfg.Version, ref)
 
 	req, err := http.NewRequest("DELETE", url, nil)
