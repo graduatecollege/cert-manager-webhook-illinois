@@ -132,6 +132,7 @@ spec:
 | `host` | Yes | - | Infoblox WAPI host (e.g., ipam.illinois.edu or dev.ipam.illinois.edu) |
 | `version` | No | v2.12 | Infoblox WAPI version |
 | `view` | No | default | DNS view name |
+| `ttl` | No | 300 | DNS record TTL in seconds |
 | `usernameSecretRef` | Yes | - | Reference to secret containing username |
 | `passwordSecretRef` | Yes | - | Reference to secret containing password |
 | `skipTLSVerify` | No | false | Skip TLS certificate verification (not recommended for production) |

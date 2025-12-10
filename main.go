@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -57,6 +58,8 @@ type infobloxDNSProviderConfig struct {
 	Version string `json:"version,omitempty"`
 	// View is the DNS view (default: "default")
 	View string `json:"view,omitempty"`
+	// TTL is the DNS record TTL in seconds (default: 300)
+	TTL int `json:"ttl,omitempty"`
 	// UsernameSecretRef references a Secret containing the username
 	UsernameSecretRef SecretKeySelector `json:"usernameSecretRef"`
 	// PasswordSecretRef references a Secret containing the password
@@ -98,7 +101,7 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 	// If a record with this exact value already exists, don't create a duplicate
 	for _, record := range existingRecords {
 		if record.Text == ch.Key {
-			fmt.Printf("TXT record already exists for %s with value %s\n", recordName, ch.Key)
+			log.Printf("TXT record already exists for %s with value %s", recordName, ch.Key)
 			return nil
 		}
 	}
@@ -109,7 +112,7 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error creating TXT record: %v", err)
 	}
 
-	fmt.Printf("Successfully created TXT record for %s\n", recordName)
+	log.Printf("Successfully created TXT record for %s", recordName)
 	return nil
 }
 
@@ -143,13 +146,13 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 			if err != nil {
 				return fmt.Errorf("error deleting TXT record: %v", err)
 			}
-			fmt.Printf("Successfully deleted TXT record for %s\n", recordName)
+			log.Printf("Successfully deleted TXT record for %s", recordName)
 			return nil
 		}
 	}
 
 	// Record not found, but that's okay (idempotent)
-	fmt.Printf("TXT record not found for %s with value %s, already cleaned up\n", recordName, ch.Key)
+	log.Printf("TXT record not found for %s with value %s, already cleaned up", recordName, ch.Key)
 	return nil
 }
 
@@ -182,6 +185,9 @@ func loadConfig(cfgJSON *extapi.JSON) (infobloxDNSProviderConfig, error) {
 	}
 	if cfg.View == "" {
 		cfg.View = "default"
+	}
+	if cfg.TTL == 0 {
+		cfg.TTL = 300
 	}
 
 	// Validate required fields
@@ -228,6 +234,10 @@ func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig
 // newHTTPClient creates a new HTTP client with optional TLS verification skip
 func (c *infobloxDNSProviderSolver) newHTTPClient(cfg infobloxDNSProviderConfig) *http.Client {
 	if cfg.SkipTLSVerify {
+		// WARNING: InsecureSkipVerify disables TLS certificate validation
+		// This creates a security vulnerability allowing man-in-the-middle attacks
+		// Only use this for testing purposes with self-signed certificates
+		log.Printf("WARNING: TLS certificate verification is disabled")
 		return &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -288,7 +298,7 @@ func (c *infobloxDNSProviderSolver) createTXTRecord(client *http.Client, cfg inf
 		Name: name,
 		Text: text,
 		View: cfg.View,
-		TTL:  300,
+		TTL:  cfg.TTL,
 	}
 
 	jsonData, err := json.Marshal(record)
