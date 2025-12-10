@@ -9,8 +9,8 @@ The `config.json` file should contain:
 - `host`: The Infoblox WAPI host (e.g., ipam.illinois.edu or dev.ipam.illinois.edu)
 - `version`: The WAPI version (default: v2.12)
 - `view`: The DNS view (default: default)
-- `usernameSecretRef`: Reference to the Kubernetes secret containing the username
-- `passwordSecretRef`: Reference to the Kubernetes secret containing the password
+- `usernameFile`: Path to the file containing the username (default: /etc/infoblox/username)
+- `passwordFile`: Path to the file containing the password (default: /etc/infoblox/password)
 - `skipTLSVerify`: (optional) Skip TLS certificate verification
 
 ## Example
@@ -20,13 +20,22 @@ The `config.json` file should contain:
   "host": "ipam.illinois.edu",
   "version": "v2.12",
   "view": "default",
-  "usernameSecretRef": {
-    "name": "infoblox-credentials",
-    "key": "username"
-  },
-  "passwordSecretRef": {
-    "name": "infoblox-credentials",
-    "key": "password"
-  }
+  "usernameFile": "/etc/infoblox/username",
+  "passwordFile": "/etc/infoblox/password"
 }
+```
+
+## Mounting Credentials
+
+Credentials should be mounted as volume files in the webhook container. For example, using a Kubernetes secret:
+
+```yaml
+volumes:
+  - name: infoblox-credentials
+    secret:
+      secretName: infoblox-credentials
+volumeMounts:
+  - name: infoblox-credentials
+    mountPath: /etc/infoblox
+    readOnly: true
 ```

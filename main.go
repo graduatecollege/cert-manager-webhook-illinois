@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -14,13 +13,10 @@ import (
 	"strings"
 
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
-	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
@@ -40,7 +36,6 @@ func main() {
 // infobloxDNSProviderSolver implements the provider-specific logic needed to
 // 'present' an ACME challenge TXT record for Infoblox DNS provider.
 type infobloxDNSProviderSolver struct {
-	client kubernetes.Interface
 }
 
 // infobloxDNSProviderConfig is a structure that is used to decode into when
@@ -54,10 +49,10 @@ type infobloxDNSProviderConfig struct {
 	View string `json:"view,omitempty"`
 	// TTL is the DNS record TTL in seconds (default: 300)
 	TTL int `json:"ttl,omitempty"`
-	// UsernameSecretRef references a Secret containing the username
-	UsernameSecretRef cmmeta.SecretKeySelector `json:"usernameSecretRef"`
-	// PasswordSecretRef references a Secret containing the password
-	PasswordSecretRef cmmeta.SecretKeySelector `json:"passwordSecretRef"`
+	// UsernameFile is the path to the file containing the username (default: /etc/infoblox/username)
+	UsernameFile string `json:"usernameFile,omitempty"`
+	// PasswordFile is the path to the file containing the password (default: /etc/infoblox/password)
+	PasswordFile string `json:"passwordFile,omitempty"`
 	// SkipTLSVerify skips TLS certificate verification (default: false)
 	SkipTLSVerify bool `json:"skipTLSVerify,omitempty"`
 }
@@ -76,7 +71,7 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
-	username, password, err := c.getCredentials(cfg, ch.ResourceNamespace)
+	username, password, err := c.getCredentials(cfg)
 	if err != nil {
 		return fmt.Errorf("error getting credentials: %v", err)
 	}
@@ -117,7 +112,7 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
-	username, password, err := c.getCredentials(cfg, ch.ResourceNamespace)
+	username, password, err := c.getCredentials(cfg)
 	if err != nil {
 		return fmt.Errorf("error getting credentials: %v", err)
 	}
@@ -152,12 +147,7 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 
 // Initialize will be called when the webhook first starts.
 func (c *infobloxDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
-	cl, err := kubernetes.NewForConfig(kubeClientConfig)
-	if err != nil {
-		return fmt.Errorf("error creating Kubernetes client: %v", err)
-	}
-
-	c.client = cl
+	// No initialization needed - credentials are read from mounted files
 	return nil
 }
 
@@ -183,58 +173,38 @@ func loadConfig(cfgJSON *extapi.JSON) (infobloxDNSProviderConfig, error) {
 	if cfg.TTL == 0 {
 		cfg.TTL = 300
 	}
+	if cfg.UsernameFile == "" {
+		cfg.UsernameFile = "/etc/infoblox/username"
+	}
+	if cfg.PasswordFile == "" {
+		cfg.PasswordFile = "/etc/infoblox/password"
+	}
 
 	// Validate required fields
 	if cfg.Host == "" {
 		return cfg, fmt.Errorf("host is required")
 	}
-	if cfg.UsernameSecretRef.Name == "" {
-		return cfg, fmt.Errorf("usernameSecretRef.name is required")
-	}
-	if cfg.PasswordSecretRef.Name == "" {
-		return cfg, fmt.Errorf("passwordSecretRef.name is required")
-	}
 
 	return cfg, nil
 }
 
-// getCredentials retrieves the username and password from Kubernetes secrets
-func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig, namespace string) (string, string, error) {
-	ctx := context.Background()
-
-	// Get username from secret
-	usernameSecret, err := c.client.CoreV1().Secrets(namespace).Get(ctx, cfg.UsernameSecretRef.Name, metav1.GetOptions{})
+// getCredentials retrieves the username and password from mounted volume files
+func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig) (string, string, error) {
+	// Read username from file
+	usernameBytes, err := os.ReadFile(cfg.UsernameFile)
 	if err != nil {
-		return "", "", fmt.Errorf("error getting username secret: %v", err)
+		return "", "", fmt.Errorf("error reading username file %s: %v", cfg.UsernameFile, err)
 	}
+	username := strings.TrimSpace(string(usernameBytes))
 
-	// Use default key if not specified
-	usernameKey := cfg.UsernameSecretRef.Key
-	if usernameKey == "" {
-		usernameKey = "username"
-	}
-	username, ok := usernameSecret.Data[usernameKey]
-	if !ok {
-		return "", "", fmt.Errorf("key %s not found in username secret", usernameKey)
-	}
-
-	// Get password from secret
-	passwordSecret, err := c.client.CoreV1().Secrets(namespace).Get(ctx, cfg.PasswordSecretRef.Name, metav1.GetOptions{})
+	// Read password from file
+	passwordBytes, err := os.ReadFile(cfg.PasswordFile)
 	if err != nil {
-		return "", "", fmt.Errorf("error getting password secret: %v", err)
+		return "", "", fmt.Errorf("error reading password file %s: %v", cfg.PasswordFile, err)
 	}
+	password := strings.TrimSpace(string(passwordBytes))
 
-	// Use default key if not specified
-	passwordKey := cfg.PasswordSecretRef.Key
-	if passwordKey == "" {
-		passwordKey = "password"
-	}
-	password, ok := passwordSecret.Data[passwordKey]
-	if !ok {
-		return "", "", fmt.Errorf("key %s not found in password secret", passwordKey)
-	}
-
-	return string(username), string(password), nil
+	return username, password, nil
 }
 
 // newHTTPClient creates a new HTTP client with optional TLS verification skip

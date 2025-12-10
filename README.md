@@ -75,7 +75,7 @@ own options in order for tests to pass.
 
 ### Installation
 
-1. Create a secret with your Infoblox credentials:
+1. Create a secret with your Infoblox credentials as files:
 
 ```bash
 kubectl create secret generic infoblox-credentials \
@@ -84,7 +84,22 @@ kubectl create secret generic infoblox-credentials \
   -n cert-manager
 ```
 
-2. Deploy the webhook:
+2. Deploy the webhook with credential volume mounts:
+
+The webhook deployment should mount the credentials secret as volume files. Update your `deploy/example-webhook/templates/deployment.yaml` to include:
+
+```yaml
+volumeMounts:
+  - name: infoblox-credentials
+    mountPath: /etc/infoblox
+    readOnly: true
+volumes:
+  - name: infoblox-credentials
+    secret:
+      secretName: infoblox-credentials
+```
+
+3. Install the webhook:
 
 ```bash
 helm install infoblox-webhook ./deploy/example-webhook \
@@ -117,12 +132,8 @@ spec:
             host: ipam.illinois.edu
             version: v2.12
             view: default
-            usernameSecretRef:
-              name: infoblox-credentials
-              key: username
-            passwordSecretRef:
-              name: infoblox-credentials
-              key: password
+            usernameFile: /etc/infoblox/username
+            passwordFile: /etc/infoblox/password
 ```
 
 ### Configuration Options
@@ -133,8 +144,8 @@ spec:
 | `version` | No | v2.12 | Infoblox WAPI version |
 | `view` | No | default | DNS view name |
 | `ttl` | No | 300 | DNS record TTL in seconds |
-| `usernameSecretRef` | Yes | - | Reference to secret containing username |
-| `passwordSecretRef` | Yes | - | Reference to secret containing password |
+| `usernameFile` | No | /etc/infoblox/username | Path to file containing username (mounted from secret) |
+| `passwordFile` | No | /etc/infoblox/password | Path to file containing password (mounted from secret) |
 | `skipTLSVerify` | No | false | Skip TLS certificate verification (not recommended for production) |
 
 ### Development
@@ -147,12 +158,8 @@ config:
   version: v2.12
   view: default
   skipTLSVerify: false  # Set to true only if needed for testing
-  usernameSecretRef:
-    name: infoblox-credentials
-    key: username
-  passwordSecretRef:
-    name: infoblox-credentials
-    key: password
+  usernameFile: /etc/infoblox/username
+  passwordFile: /etc/infoblox/password
 ```
 
 ## Testing
