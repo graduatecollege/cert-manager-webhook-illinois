@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
@@ -41,14 +43,6 @@ type infobloxDNSProviderSolver struct {
 	client kubernetes.Interface
 }
 
-// SecretKeySelector is a reference to a secret key
-type SecretKeySelector struct {
-	// Name is the name of the secret
-	Name string `json:"name"`
-	// Key is the key of the secret to select from
-	Key string `json:"key"`
-}
-
 // infobloxDNSProviderConfig is a structure that is used to decode into when
 // solving a DNS01 challenge.
 type infobloxDNSProviderConfig struct {
@@ -61,9 +55,9 @@ type infobloxDNSProviderConfig struct {
 	// TTL is the DNS record TTL in seconds (default: 300)
 	TTL int `json:"ttl,omitempty"`
 	// UsernameSecretRef references a Secret containing the username
-	UsernameSecretRef SecretKeySelector `json:"usernameSecretRef"`
+	UsernameSecretRef cmmeta.SecretKeySelector `json:"usernameSecretRef"`
 	// PasswordSecretRef references a Secret containing the password
-	PasswordSecretRef SecretKeySelector `json:"passwordSecretRef"`
+	PasswordSecretRef cmmeta.SecretKeySelector `json:"passwordSecretRef"`
 	// SkipTLSVerify skips TLS certificate verification (default: false)
 	SkipTLSVerify bool `json:"skipTLSVerify,omitempty"`
 }
@@ -194,11 +188,11 @@ func loadConfig(cfgJSON *extapi.JSON) (infobloxDNSProviderConfig, error) {
 	if cfg.Host == "" {
 		return cfg, fmt.Errorf("host is required")
 	}
-	if cfg.UsernameSecretRef.Name == "" || cfg.UsernameSecretRef.Key == "" {
-		return cfg, fmt.Errorf("usernameSecretRef is required")
+	if cfg.UsernameSecretRef.Name == "" {
+		return cfg, fmt.Errorf("usernameSecretRef.name is required")
 	}
-	if cfg.PasswordSecretRef.Name == "" || cfg.PasswordSecretRef.Key == "" {
-		return cfg, fmt.Errorf("passwordSecretRef is required")
+	if cfg.PasswordSecretRef.Name == "" {
+		return cfg, fmt.Errorf("passwordSecretRef.name is required")
 	}
 
 	return cfg, nil
@@ -213,9 +207,15 @@ func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig
 	if err != nil {
 		return "", "", fmt.Errorf("error getting username secret: %v", err)
 	}
-	username, ok := usernameSecret.Data[cfg.UsernameSecretRef.Key]
+
+	// Use default key if not specified
+	usernameKey := cfg.UsernameSecretRef.Key
+	if usernameKey == "" {
+		usernameKey = "username"
+	}
+	username, ok := usernameSecret.Data[usernameKey]
 	if !ok {
-		return "", "", fmt.Errorf("key %s not found in username secret", cfg.UsernameSecretRef.Key)
+		return "", "", fmt.Errorf("key %s not found in username secret", usernameKey)
 	}
 
 	// Get password from secret
@@ -223,9 +223,15 @@ func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig
 	if err != nil {
 		return "", "", fmt.Errorf("error getting password secret: %v", err)
 	}
-	password, ok := passwordSecret.Data[cfg.PasswordSecretRef.Key]
+
+	// Use default key if not specified
+	passwordKey := cfg.PasswordSecretRef.Key
+	if passwordKey == "" {
+		passwordKey = "password"
+	}
+	password, ok := passwordSecret.Data[passwordKey]
 	if !ok {
-		return "", "", fmt.Errorf("key %s not found in password secret", cfg.PasswordSecretRef.Key)
+		return "", "", fmt.Errorf("key %s not found in password secret", passwordKey)
 	}
 
 	return string(username), string(password), nil
@@ -258,9 +264,11 @@ type InfobloxTXTRecord struct {
 
 // getTXTRecords retrieves existing TXT records for a given name
 func (c *infobloxDNSProviderSolver) getTXTRecords(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name string) ([]InfobloxTXTRecord, error) {
-	url := fmt.Sprintf("https://%s/wapi/%s/record:txt?name=%s&view=%s", cfg.Host, cfg.Version, name, cfg.View)
+	// URL encode parameters to prevent injection attacks
+	requestURL := fmt.Sprintf("https://%s/wapi/%s/record:txt?name=%s&view=%s",
+		cfg.Host, cfg.Version, url.QueryEscape(name), url.QueryEscape(cfg.View))
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
 		return nil, err
 	}
