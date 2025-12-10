@@ -1,11 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
@@ -19,128 +27,324 @@ func main() {
 		panic("GROUP_NAME must be specified")
 	}
 
-	// This will register our custom DNS provider with the webhook serving
+	// This will register our Infoblox DNS provider with the webhook serving
 	// library, making it available as an API under the provided GroupName.
-	// You can register multiple DNS provider implementations with a single
-	// webhook, where the Name() method will be used to disambiguate between
-	// the different implementations.
 	cmd.RunWebhookServer(GroupName,
-		&customDNSProviderSolver{},
+		&infobloxDNSProviderSolver{},
 	)
 }
 
-// customDNSProviderSolver implements the provider-specific logic needed to
-// 'present' an ACME challenge TXT record for your own DNS provider.
-// To do so, it must implement the `github.com/cert-manager/cert-manager/pkg/acme/webhook.Solver`
-// interface.
-type customDNSProviderSolver struct {
-	// If a Kubernetes 'clientset' is needed, you must:
-	// 1. uncomment the additional `client` field in this structure below
-	// 2. uncomment the "k8s.io/client-go/kubernetes" import at the top of the file
-	// 3. uncomment the relevant code in the Initialize method below
-	// 4. ensure your webhook's service account has the required RBAC role
-	//    assigned to it for interacting with the Kubernetes APIs you need.
-	//client kubernetes.Clientset
+// infobloxDNSProviderSolver implements the provider-specific logic needed to
+// 'present' an ACME challenge TXT record for Infoblox DNS provider.
+type infobloxDNSProviderSolver struct {
+	client kubernetes.Interface
 }
 
-// customDNSProviderConfig is a structure that is used to decode into when
-// solving a DNS01 challenge.
-// This information is provided by cert-manager, and may be a reference to
-// additional configuration that's needed to solve the challenge for this
-// particular certificate or issuer.
-// This typically includes references to Secret resources containing DNS
-// provider credentials, in cases where a 'multi-tenant' DNS solver is being
-// created.
-// If you do *not* require per-issuer or per-certificate configuration to be
-// provided to your webhook, you can skip decoding altogether in favour of
-// using CLI flags or similar to provide configuration.
-// You should not include sensitive information here. If credentials need to
-// be used by your provider here, you should reference a Kubernetes Secret
-// resource and fetch these credentials using a Kubernetes clientset.
-type customDNSProviderConfig struct {
-	// Change the two fields below according to the format of the configuration
-	// to be decoded.
-	// These fields will be set by users in the
-	// `issuer.spec.acme.dns01.providers.webhook.config` field.
+// SecretKeySelector is a reference to a secret key
+type SecretKeySelector struct {
+	// Name is the name of the secret
+	Name string `json:"name"`
+	// Key is the key of the secret to select from
+	Key string `json:"key"`
+}
 
-	//Email           string `json:"email"`
-	//APIKeySecretRef v1alpha1.SecretKeySelector `json:"apiKeySecretRef"`
+// infobloxDNSProviderConfig is a structure that is used to decode into when
+// solving a DNS01 challenge.
+type infobloxDNSProviderConfig struct {
+	// Host is the Infoblox WAPI host (e.g., ipam.illinois.edu or dev.ipam.illinois.edu)
+	Host string `json:"host"`
+	// Version is the WAPI version (e.g., v2.12)
+	Version string `json:"version,omitempty"`
+	// View is the DNS view (default: "default")
+	View string `json:"view,omitempty"`
+	// UsernameSecretRef references a Secret containing the username
+	UsernameSecretRef SecretKeySelector `json:"usernameSecretRef"`
+	// PasswordSecretRef references a Secret containing the password
+	PasswordSecretRef SecretKeySelector `json:"passwordSecretRef"`
+	// SkipTLSVerify skips TLS certificate verification (default: false)
+	SkipTLSVerify bool `json:"skipTLSVerify,omitempty"`
 }
 
 // Name is used as the name for this DNS solver when referencing it on the ACME
 // Issuer resource.
-// This should be unique **within the group name**, i.e. you can have two
-// solvers configured with the same Name() **so long as they do not co-exist
-// within a single webhook deployment**.
-// For example, `cloudflare` may be used as the name of a solver.
-func (c *customDNSProviderSolver) Name() string {
-	return "my-custom-solver"
+func (c *infobloxDNSProviderSolver) Name() string {
+	return "infoblox"
 }
 
 // Present is responsible for actually presenting the DNS record with the
-// DNS provider.
-// This method should tolerate being called multiple times with the same value.
-// cert-manager itself will later perform a self check to ensure that the
-// solver has correctly configured the DNS provider.
-func (c *customDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
+// Infoblox DNS provider.
+func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
-		return err
+		return fmt.Errorf("error loading config: %v", err)
 	}
 
-	// TODO: do something more useful with the decoded configuration
-	fmt.Printf("Decoded configuration %v", cfg)
+	username, password, err := c.getCredentials(cfg, ch.ResourceNamespace)
+	if err != nil {
+		return fmt.Errorf("error getting credentials: %v", err)
+	}
 
-	// TODO: add code that sets a record in the DNS provider's console
+	client := c.newHTTPClient(cfg)
+	
+	// Extract the record name from the FQDN
+	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
+	
+	// Check if record already exists
+	existingRecords, err := c.getTXTRecords(client, cfg, username, password, recordName)
+	if err != nil {
+		return fmt.Errorf("error checking existing records: %v", err)
+	}
+
+	// If a record with this exact value already exists, don't create a duplicate
+	for _, record := range existingRecords {
+		if record.Text == ch.Key {
+			fmt.Printf("TXT record already exists for %s with value %s\n", recordName, ch.Key)
+			return nil
+		}
+	}
+
+	// Create the TXT record
+	err = c.createTXTRecord(client, cfg, username, password, recordName, ch.Key)
+	if err != nil {
+		return fmt.Errorf("error creating TXT record: %v", err)
+	}
+
+	fmt.Printf("Successfully created TXT record for %s\n", recordName)
 	return nil
 }
 
-// CleanUp should delete the relevant TXT record from the DNS provider console.
-// If multiple TXT records exist with the same record name (e.g.
-// _acme-challenge.example.com) then **only** the record with the same `key`
-// value provided on the ChallengeRequest should be cleaned up.
-// This is in order to facilitate multiple DNS validations for the same domain
-// concurrently.
-func (c *customDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
-	// TODO: add code that deletes a record from the DNS provider's console
+// CleanUp should delete the relevant TXT record from the Infoblox DNS provider.
+func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
+	cfg, err := loadConfig(ch.Config)
+	if err != nil {
+		return fmt.Errorf("error loading config: %v", err)
+	}
+
+	username, password, err := c.getCredentials(cfg, ch.ResourceNamespace)
+	if err != nil {
+		return fmt.Errorf("error getting credentials: %v", err)
+	}
+
+	client := c.newHTTPClient(cfg)
+	
+	// Extract the record name from the FQDN
+	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
+	
+	// Get existing records
+	existingRecords, err := c.getTXTRecords(client, cfg, username, password, recordName)
+	if err != nil {
+		return fmt.Errorf("error getting existing records: %v", err)
+	}
+
+	// Delete only the record with the matching key
+	for _, record := range existingRecords {
+		if record.Text == ch.Key {
+			err = c.deleteTXTRecord(client, cfg, username, password, record.Ref)
+			if err != nil {
+				return fmt.Errorf("error deleting TXT record: %v", err)
+			}
+			fmt.Printf("Successfully deleted TXT record for %s\n", recordName)
+			return nil
+		}
+	}
+
+	// Record not found, but that's okay (idempotent)
+	fmt.Printf("TXT record not found for %s with value %s, already cleaned up\n", recordName, ch.Key)
 	return nil
 }
 
 // Initialize will be called when the webhook first starts.
-// This method can be used to instantiate the webhook, i.e. initialising
-// connections or warming up caches.
-// Typically, the kubeClientConfig parameter is used to build a Kubernetes
-// client that can be used to fetch resources from the Kubernetes API, e.g.
-// Secret resources containing credentials used to authenticate with DNS
-// provider accounts.
-// The stopCh can be used to handle early termination of the webhook, in cases
-// where a SIGTERM or similar signal is sent to the webhook process.
-func (c *customDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
-	///// UNCOMMENT THE BELOW CODE TO MAKE A KUBERNETES CLIENTSET AVAILABLE TO
-	///// YOUR CUSTOM DNS PROVIDER
+func (c *infobloxDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
+	cl, err := kubernetes.NewForConfig(kubeClientConfig)
+	if err != nil {
+		return fmt.Errorf("error creating Kubernetes client: %v", err)
+	}
 
-	//cl, err := kubernetes.NewForConfig(kubeClientConfig)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//c.client = cl
-
-	///// END OF CODE TO MAKE KUBERNETES CLIENTSET AVAILABLE
+	c.client = cl
 	return nil
 }
 
 // loadConfig is a small helper function that decodes JSON configuration into
 // the typed config struct.
-func loadConfig(cfgJSON *extapi.JSON) (customDNSProviderConfig, error) {
-	cfg := customDNSProviderConfig{}
+func loadConfig(cfgJSON *extapi.JSON) (infobloxDNSProviderConfig, error) {
+	cfg := infobloxDNSProviderConfig{}
 	// handle the 'base case' where no configuration has been provided
 	if cfgJSON == nil {
-		return cfg, nil
+		return cfg, fmt.Errorf("no configuration provided")
 	}
 	if err := json.Unmarshal(cfgJSON.Raw, &cfg); err != nil {
 		return cfg, fmt.Errorf("error decoding solver config: %v", err)
 	}
 
+	// Set defaults
+	if cfg.Version == "" {
+		cfg.Version = "v2.12"
+	}
+	if cfg.View == "" {
+		cfg.View = "default"
+	}
+
+	// Validate required fields
+	if cfg.Host == "" {
+		return cfg, fmt.Errorf("host is required")
+	}
+	if cfg.UsernameSecretRef.Name == "" || cfg.UsernameSecretRef.Key == "" {
+		return cfg, fmt.Errorf("usernameSecretRef is required")
+	}
+	if cfg.PasswordSecretRef.Name == "" || cfg.PasswordSecretRef.Key == "" {
+		return cfg, fmt.Errorf("passwordSecretRef is required")
+	}
+
 	return cfg, nil
+}
+
+// getCredentials retrieves the username and password from Kubernetes secrets
+func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig, namespace string) (string, string, error) {
+	ctx := context.Background()
+
+	// Get username from secret
+	usernameSecret, err := c.client.CoreV1().Secrets(namespace).Get(ctx, cfg.UsernameSecretRef.Name, metav1.GetOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("error getting username secret: %v", err)
+	}
+	username, ok := usernameSecret.Data[cfg.UsernameSecretRef.Key]
+	if !ok {
+		return "", "", fmt.Errorf("key %s not found in username secret", cfg.UsernameSecretRef.Key)
+	}
+
+	// Get password from secret
+	passwordSecret, err := c.client.CoreV1().Secrets(namespace).Get(ctx, cfg.PasswordSecretRef.Name, metav1.GetOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("error getting password secret: %v", err)
+	}
+	password, ok := passwordSecret.Data[cfg.PasswordSecretRef.Key]
+	if !ok {
+		return "", "", fmt.Errorf("key %s not found in password secret", cfg.PasswordSecretRef.Key)
+	}
+
+	return string(username), string(password), nil
+}
+
+// newHTTPClient creates a new HTTP client with optional TLS verification skip
+func (c *infobloxDNSProviderSolver) newHTTPClient(cfg infobloxDNSProviderConfig) *http.Client {
+	if cfg.SkipTLSVerify {
+		return &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
+	return http.DefaultClient
+}
+
+// InfobloxTXTRecord represents a TXT record in Infoblox
+type InfobloxTXTRecord struct {
+	Ref  string `json:"_ref,omitempty"`
+	Name string `json:"name"`
+	Text string `json:"text"`
+	View string `json:"view"`
+	TTL  int    `json:"ttl,omitempty"`
+}
+
+// getTXTRecords retrieves existing TXT records for a given name
+func (c *infobloxDNSProviderSolver) getTXTRecords(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name string) ([]InfobloxTXTRecord, error) {
+	url := fmt.Sprintf("https://%s/wapi/%s/record:txt?name=%s&view=%s", cfg.Host, cfg.Version, name, cfg.View)
+	
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(username, password)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get TXT records: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var records []InfobloxTXTRecord
+	if err := json.Unmarshal(body, &records); err != nil {
+		return nil, err
+	}
+
+	return records, nil
+}
+
+// createTXTRecord creates a new TXT record in Infoblox
+func (c *infobloxDNSProviderSolver) createTXTRecord(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name, text string) error {
+	url := fmt.Sprintf("https://%s/wapi/%s/record:txt", cfg.Host, cfg.Version)
+	
+	record := InfobloxTXTRecord{
+		Name: name,
+		Text: text,
+		View: cfg.View,
+		TTL:  300,
+	}
+
+	jsonData, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(username, password)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to create TXT record: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// deleteTXTRecord deletes a TXT record from Infoblox using its reference
+func (c *infobloxDNSProviderSolver) deleteTXTRecord(client *http.Client, cfg infobloxDNSProviderConfig, username, password, ref string) error {
+	url := fmt.Sprintf("https://%s/wapi/%s/%s", cfg.Host, cfg.Version, ref)
+	
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(username, password)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to delete TXT record: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }

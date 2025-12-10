@@ -1,0 +1,13 @@
+{
+  "host": "ipam.illinois.edu",
+  "version": "v2.12",
+  "view": "default",
+  "usernameSecretRef": {
+    "name": "infoblox-credentials",
+    "key": "username"
+  },
+  "passwordSecretRef": {
+    "name": "infoblox-credentials",
+    "key": "password"
+  }
+}
