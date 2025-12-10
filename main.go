@@ -1,15 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"os"
 	"strings"
 
@@ -18,6 +12,7 @@ import (
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
+	ibclient "github.com/infobloxopen/infoblox-go-client/v2"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
@@ -37,7 +32,7 @@ func main() {
 // infobloxDNSProviderSolver implements the provider-specific logic needed to
 // 'present' an ACME challenge TXT record for Infoblox DNS provider.
 type infobloxDNSProviderSolver struct {
-	httpClient *http.Client
+	ibClient ibclient.IBConnector
 }
 
 // infobloxDNSProviderConfig is a structure that is used to decode into when
@@ -73,30 +68,63 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
-	username, password, err := c.getCredentials(cfg)
+	// Get or create the Infoblox client
+	err = c.getOrCreateClient(cfg)
 	if err != nil {
-		return fmt.Errorf("error getting credentials: %v", err)
+		return fmt.Errorf("error initializing Infoblox client: %v", err)
 	}
 
 	// Extract the record name from the FQDN
 	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
 
 	// Check if record already exists
-	existingRecords, err := c.getTXTRecords(cfg, username, password, recordName)
+	var existingRecords []ibclient.RecordTXT
+	searchObj := ibclient.NewEmptyRecordTXT()
+
+	queryParams := ibclient.NewQueryParams(
+		false,
+		map[string]string{
+			"name": recordName,
+			"view": cfg.View,
+		},
+	)
+
+	err = c.ibClient.GetObject(searchObj, "", queryParams, &existingRecords)
 	if err != nil {
 		return fmt.Errorf("error checking existing records: %v", err)
 	}
 
 	// If a record with this exact value already exists, don't create a duplicate
 	for _, record := range existingRecords {
-		if record.Text == ch.Key {
+		if record.Text != nil && *record.Text == ch.Key {
 			log.Printf("TXT record already exists for %s with value %s", recordName, ch.Key)
 			return nil
 		}
 	}
 
+	// Extract zone from record name (everything after the first dot)
+	zone := ""
+	parts := strings.SplitN(recordName, ".", 2)
+	if len(parts) > 1 {
+		zone = parts[1]
+	} else {
+		zone = recordName
+	}
+
+	// Create TXT record object
+	recordTXT := ibclient.NewRecordTXT(
+		cfg.View,
+		zone,
+		recordName,
+		ch.Key,
+		uint32(cfg.TTL),
+		true, // use TTL
+		"",   // comment
+		nil,  // extensible attributes
+	)
+
 	// Create the TXT record
-	err = c.createTXTRecord(cfg, username, password, recordName, ch.Key)
+	_, err = c.ibClient.CreateObject(recordTXT)
 	if err != nil {
 		return fmt.Errorf("error creating TXT record: %v", err)
 	}
@@ -112,24 +140,36 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
-	username, password, err := c.getCredentials(cfg)
+	// Get or create the Infoblox client
+	err = c.getOrCreateClient(cfg)
 	if err != nil {
-		return fmt.Errorf("error getting credentials: %v", err)
+		return fmt.Errorf("error initializing Infoblox client: %v", err)
 	}
 
 	// Extract the record name from the FQDN
 	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
 
 	// Get existing records
-	existingRecords, err := c.getTXTRecords(cfg, username, password, recordName)
+	var existingRecords []ibclient.RecordTXT
+	searchObj := ibclient.NewEmptyRecordTXT()
+
+	queryParams := ibclient.NewQueryParams(
+		false,
+		map[string]string{
+			"name": recordName,
+			"view": cfg.View,
+		},
+	)
+
+	err = c.ibClient.GetObject(searchObj, "", queryParams, &existingRecords)
 	if err != nil {
 		return fmt.Errorf("error getting existing records: %v", err)
 	}
 
 	// Delete only the record with the matching key
 	for _, record := range existingRecords {
-		if record.Text == ch.Key {
-			err = c.deleteTXTRecord(cfg, username, password, record.Ref)
+		if record.Text != nil && *record.Text == ch.Key {
+			_, err = c.ibClient.DeleteObject(record.Ref)
 			if err != nil {
 				return fmt.Errorf("error deleting TXT record: %v", err)
 			}
@@ -145,18 +185,8 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 
 // Initialize will be called when the webhook first starts.
 func (c *infobloxDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
-	// Create HTTP client with cookie jar for session persistence
-	// The Infoblox API returns an "ibapauth" cookie after the first authentication
-	// which speeds up subsequent requests
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return fmt.Errorf("error creating cookie jar: %v", err)
-	}
-
-	c.httpClient = &http.Client{
-		Jar: jar,
-	}
-
+	// Initialization will be done when we get the first request with config
+	// The Infoblox client will be created on-demand with proper credentials
 	return nil
 }
 
@@ -216,133 +246,49 @@ func (c *infobloxDNSProviderSolver) getCredentials(cfg infobloxDNSProviderConfig
 	return username, password, nil
 }
 
-// getHTTPClient returns the HTTP client, optionally configuring TLS verification skip
-func (c *infobloxDNSProviderSolver) getHTTPClient(cfg infobloxDNSProviderConfig) *http.Client {
-	if cfg.SkipTLSVerify && c.httpClient.Transport == nil {
-		// WARNING: InsecureSkipVerify disables TLS certificate validation
-		// This creates a security vulnerability allowing man-in-the-middle attacks
-		// Only use this for testing purposes with self-signed certificates
+// getOrCreateClient gets or creates the Infoblox client with the given configuration
+func (c *infobloxDNSProviderSolver) getOrCreateClient(cfg infobloxDNSProviderConfig) error {
+	// If client already exists, reuse it
+	if c.ibClient != nil {
+		return nil
+	}
+
+	// Get credentials
+	username, password, err := c.getCredentials(cfg)
+	if err != nil {
+		return fmt.Errorf("error getting credentials: %v", err)
+	}
+
+	// Create host config for Infoblox
+	hostConfig := ibclient.HostConfig{
+		Host:    cfg.Host,
+		Version: cfg.Version,
+		Port:    "443",
+	}
+
+	// Create transport config
+	transportConfig := ibclient.NewTransportConfig(
+		fmt.Sprintf("%t", cfg.SkipTLSVerify),
+		20, // HTTP request timeout in seconds
+		10, // HTTP pool connections
+	)
+
+	// Create auth config
+	authConfig := ibclient.AuthConfig{
+		Username: username,
+		Password: password,
+	}
+
+	// Create the connector
+	connector, err := ibclient.NewConnector(hostConfig, authConfig, transportConfig, nil, nil)
+	if err != nil {
+		return fmt.Errorf("error creating Infoblox connector: %v", err)
+	}
+
+	if cfg.SkipTLSVerify {
 		log.Printf("WARNING: TLS certificate verification is disabled")
-		c.httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
-	return c.httpClient
-}
-
-// InfobloxTXTRecord represents a TXT record in Infoblox
-type InfobloxTXTRecord struct {
-	Ref  string `json:"_ref,omitempty"`
-	Name string `json:"name"`
-	Text string `json:"text"`
-	View string `json:"view"`
-	TTL  int    `json:"ttl,omitempty"`
-}
-
-// getTXTRecords retrieves existing TXT records for a given name
-func (c *infobloxDNSProviderSolver) getTXTRecords(cfg infobloxDNSProviderConfig, username, password, name string) ([]InfobloxTXTRecord, error) {
-	client := c.getHTTPClient(cfg)
-	// URL encode parameters to prevent injection attacks
-	requestURL := fmt.Sprintf("https://%s/wapi/%s/record:txt?name=%s&view=%s",
-		cfg.Host, cfg.Version, url.QueryEscape(name), url.QueryEscape(cfg.View))
-
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.SetBasicAuth(username, password)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get TXT records: status %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var records []InfobloxTXTRecord
-	if err := json.Unmarshal(body, &records); err != nil {
-		return nil, err
-	}
-
-	return records, nil
-}
-
-// createTXTRecord creates a new TXT record in Infoblox
-func (c *infobloxDNSProviderSolver) createTXTRecord(cfg infobloxDNSProviderConfig, username, password, name, text string) error {
-	client := c.getHTTPClient(cfg)
-	url := fmt.Sprintf("https://%s/wapi/%s/record:txt", cfg.Host, cfg.Version)
-
-	record := InfobloxTXTRecord{
-		Name: name,
-		Text: text,
-		View: cfg.View,
-		TTL:  cfg.TTL,
-	}
-
-	jsonData, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(username, password)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to create TXT record: status %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
-}
-
-// deleteTXTRecord deletes a TXT record from Infoblox using its reference
-func (c *infobloxDNSProviderSolver) deleteTXTRecord(cfg infobloxDNSProviderConfig, username, password, ref string) error {
-	client := c.getHTTPClient(cfg)
-	url := fmt.Sprintf("https://%s/wapi/%s/%s", cfg.Host, cfg.Version, ref)
-
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(username, password)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to delete TXT record: status %d, body: %s", resp.StatusCode, string(body))
-	}
-
+	c.ibClient = connector
 	return nil
 }
