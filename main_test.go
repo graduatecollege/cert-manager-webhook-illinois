@@ -21,7 +21,7 @@ func TestRunsSuite(t *testing.T) {
 	// Note: This test requires actual Infoblox credentials to be set up
 	// in the Kubernetes test environment. For unit testing without credentials,
 	// use the example solver.
-	
+
 	// Uncomment the below fixture when implementing with actual Infoblox credentials
 	//fixture := acmetest.NewFixture(&infobloxDNSProviderSolver{},
 	//	acmetest.SetResolvedZone(zone),
@@ -29,7 +29,7 @@ func TestRunsSuite(t *testing.T) {
 	//	acmetest.SetManifestPath("testdata/infoblox"),
 	//	acmetest.SetBinariesPath("_test/kubebuilder/bin"),
 	//)
-	
+
 	// For now, use the example solver for conformance testing
 	solver := example.New("59351")
 	fixture := acmetest.NewFixture(solver,

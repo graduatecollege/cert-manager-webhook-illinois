@@ -11,8 +11,8 @@ import (
 	"os"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -85,10 +85,10 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 	}
 
 	client := c.newHTTPClient(cfg)
-	
+
 	// Extract the record name from the FQDN
 	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
-	
+
 	// Check if record already exists
 	existingRecords, err := c.getTXTRecords(client, cfg, username, password, recordName)
 	if err != nil {
@@ -126,10 +126,10 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 	}
 
 	client := c.newHTTPClient(cfg)
-	
+
 	// Extract the record name from the FQDN
 	recordName := strings.TrimSuffix(ch.ResolvedFQDN, ".")
-	
+
 	// Get existing records
 	existingRecords, err := c.getTXTRecords(client, cfg, username, password, recordName)
 	if err != nil {
@@ -249,7 +249,7 @@ type InfobloxTXTRecord struct {
 // getTXTRecords retrieves existing TXT records for a given name
 func (c *infobloxDNSProviderSolver) getTXTRecords(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name string) ([]InfobloxTXTRecord, error) {
 	url := fmt.Sprintf("https://%s/wapi/%s/record:txt?name=%s&view=%s", cfg.Host, cfg.Version, name, cfg.View)
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -283,7 +283,7 @@ func (c *infobloxDNSProviderSolver) getTXTRecords(client *http.Client, cfg infob
 // createTXTRecord creates a new TXT record in Infoblox
 func (c *infobloxDNSProviderSolver) createTXTRecord(client *http.Client, cfg infobloxDNSProviderConfig, username, password, name, text string) error {
 	url := fmt.Sprintf("https://%s/wapi/%s/record:txt", cfg.Host, cfg.Version)
-	
+
 	record := InfobloxTXTRecord{
 		Name: name,
 		Text: text,
@@ -324,7 +324,7 @@ func (c *infobloxDNSProviderSolver) createTXTRecord(client *http.Client, cfg inf
 // deleteTXTRecord deletes a TXT record from Infoblox using its reference
 func (c *infobloxDNSProviderSolver) deleteTXTRecord(client *http.Client, cfg infobloxDNSProviderConfig, username, password, ref string) error {
 	url := fmt.Sprintf("https://%s/wapi/%s/%s", cfg.Host, cfg.Version, ref)
-	
+
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		return err
