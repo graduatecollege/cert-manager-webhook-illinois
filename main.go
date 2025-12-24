@@ -133,7 +133,7 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 	)
 
 	err = c.ibClient.GetObject(searchObj, "", queryParams, &existingRecords)
-	if err != nil {
+	if err != nil && err.Error() != "not found" {
 		return fmt.Errorf("error getting existing records: %v", err)
 	}
 

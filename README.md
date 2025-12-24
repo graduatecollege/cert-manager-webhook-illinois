@@ -2,6 +2,9 @@
 
 This is a cert-manager ACME DNS01 webhook solver for the Illinois Infoblox DNS system.
 
+> [!NOTE]
+> This assumes you have a working cert-manager installation, which isn't covered here.
+
 ## Configuration
 
 ### Prerequisites
@@ -104,3 +107,15 @@ Run the test suite. **Note** that you must be on the University of Illinois netw
 ```bash
 TEST_ZONE_NAME=grad.illinois.edu. make test
 ```
+
+## Support
+
+This product is supported by the Graduate College on a best-effort basis.
+
+As of the last update to this README, the expected End-of-Life and End-of-Support dates 
+of this product are 2026-07-09.
+
+End-of-Life was decided upon based on these dependencies:
+
+- cert-manager 1.19 (2026-07-09)
+- go 1.25 (2026-08-12)
