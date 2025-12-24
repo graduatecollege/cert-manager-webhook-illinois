@@ -49,7 +49,7 @@ jobs:
       - name: Package and push Helm chart
         run: |
           helm package deploy/illinois-infoblox-webhook --version "${VERSION}" --app-version "${VERSION}"
-          helm push "${CHART_NAME}-${VERSION}.tgz" oci://ghcr.io/graduatecollege/charts
+          helm push "illinois-infoblox-webhook-${VERSION}.tgz" oci://ghcr.io/graduatecollege/charts
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
