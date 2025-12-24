@@ -18,3 +18,5 @@ cert-manager-webhook-example
 _out
 _test
 webhook-example
+
+/etc/

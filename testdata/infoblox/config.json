@@ -1,7 +1,7 @@
 {
   "host": "ipam.illinois.edu",
-  "version": "v2.12",
+  "version": "2.13.7",
   "view": "default",
-  "usernameFile": "/etc/infoblox/username",
-  "passwordFile": "/etc/infoblox/password"
+  "usernameFile": "./etc/username",
+  "passwordFile": "./etc/password"
 }
