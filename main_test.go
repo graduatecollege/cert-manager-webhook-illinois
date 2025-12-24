@@ -17,19 +17,24 @@ func TestRunsSuite(t *testing.T) {
 	// The manifest path should contain a file named config.json that is a
 	// snippet of valid configuration that should be included on the
 	// ChallengeRequest passed as part of the test cases.
-	//
 
-	// Uncomment the below fixture when implementing your custom DNS provider
-	//fixture := acmetest.NewFixture(&customDNSProviderSolver{},
+	// Note: This test requires actual Infoblox credentials to be set up
+	// in the Kubernetes test environment. For unit testing without credentials,
+	// use the example solver.
+
+	// Uncomment the below fixture when implementing with actual Infoblox credentials
+	//fixture := acmetest.NewFixture(&infobloxDNSProviderSolver{},
 	//	acmetest.SetResolvedZone(zone),
 	//	acmetest.SetAllowAmbientCredentials(false),
-	//	acmetest.SetManifestPath("testdata/my-custom-solver"),
+	//	acmetest.SetManifestPath("testdata/infoblox"),
 	//	acmetest.SetBinariesPath("_test/kubebuilder/bin"),
 	//)
+
+	// For now, use the example solver for conformance testing
 	solver := example.New("59351")
 	fixture := acmetest.NewFixture(solver,
 		acmetest.SetResolvedZone("example.com."),
-		acmetest.SetManifestPath("testdata/my-custom-solver"),
+		acmetest.SetManifestPath("testdata/infoblox"),
 		acmetest.SetDNSServer("127.0.0.1:59351"),
 		acmetest.SetUseAuthoritative(false),
 	)
