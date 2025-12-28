@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
 	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	_ "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
@@ -51,13 +51,18 @@ func (c *infobloxDNSProviderSolver) Name() string {
 }
 
 func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
+
+	klog.Infof("call function Present: namespace=%s, zone=%s, fqdn=%s",
+		ch.ResourceNamespace, ch.ResolvedZone, ch.ResolvedFQDN)
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
+		klog.Errorf("error loading config: %v", err)
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
 	err = c.getOrCreateClient(cfg)
 	if err != nil {
+		klog.Errorf("error initializing Infoblox client: %v", err)
 		return fmt.Errorf("error initializing Infoblox client: %v", err)
 	}
 
@@ -79,12 +84,13 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 	// Error out if the error is not NotFoundError
 	var notFoundErr *ibclient.NotFoundError
 	if err != nil && !errors.As(err, &notFoundErr) {
+		klog.Errorf("error getting existing records: %v", err)
 		return fmt.Errorf("error checking existing records: %v", err)
 	}
 
 	for _, record := range existingRecords {
 		if record.Text != nil && *record.Text == ch.Key {
-			log.Printf("TXT record already exists for %s with value %s", recordName, ch.Key)
+			klog.Infof("TXT record already exists for %s with value %s", recordName, ch.Key)
 			return nil
 		}
 	}
@@ -102,21 +108,24 @@ func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error
 
 	_, err = c.ibClient.CreateObject(recordTXT)
 	if err != nil {
+		klog.Errorf("error creating TXT record: %v", err)
 		return fmt.Errorf("error creating TXT record: %v", err)
 	}
 
-	log.Printf("Successfully created TXT record for %s", recordName)
+	klog.Infof("Successfully created TXT record for %s", recordName)
 	return nil
 }
 
 func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
+		klog.Errorf("error loading config for CleanUp: %v", err)
 		return fmt.Errorf("error loading config: %v", err)
 	}
 
 	err = c.getOrCreateClient(cfg)
 	if err != nil {
+		klog.Errorf("error initializing Infoblox client for CleanUp: %v", err)
 		return fmt.Errorf("error initializing Infoblox client: %v", err)
 	}
 
@@ -135,6 +144,7 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 
 	err = c.ibClient.GetObject(searchObj, "", queryParams, &existingRecords)
 	if err != nil && err.Error() != "not found" {
+		klog.Errorf("error getting existing records for CleanUp: %v", err)
 		return fmt.Errorf("error getting existing records: %v", err)
 	}
 
@@ -142,14 +152,15 @@ func (c *infobloxDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error
 		if record.Text != nil && *record.Text == ch.Key {
 			_, err = c.ibClient.DeleteObject(record.Ref)
 			if err != nil {
+				klog.Errorf("error deleting TXT record: %v", err)
 				return fmt.Errorf("error deleting TXT record: %v", err)
 			}
-			log.Printf("Successfully deleted TXT record for %s", recordName)
+			klog.Infof("Successfully deleted TXT record for %s", recordName)
 			return nil
 		}
 	}
 
-	log.Printf("TXT record not found for %s with value %s, already cleaned up", recordName, ch.Key)
+	klog.Infof("TXT record not found for %s with value %s, already cleaned up", recordName, ch.Key)
 	return nil
 }
 
@@ -219,6 +230,8 @@ func (c *infobloxDNSProviderSolver) getOrCreateClient(cfg infobloxDNSProviderCon
 		return fmt.Errorf("error getting credentials: %v", err)
 	}
 
+	klog.Infof("Found username %s", username)
+
 	hostConfig := ibclient.HostConfig{
 		Host:    cfg.Host,
 		Version: cfg.Version,
@@ -240,11 +253,12 @@ func (c *infobloxDNSProviderSolver) getOrCreateClient(cfg infobloxDNSProviderCon
 
 	connector, err := ibclient.NewConnector(hostConfig, authConfig, transportConfig, requestBuilder, requestor)
 	if err != nil {
+		klog.Errorf("error creating Infoblox connector: %v", err)
 		return fmt.Errorf("error creating Infoblox connector: %v", err)
 	}
 
 	if cfg.SkipTLSVerify {
-		log.Printf("WARNING: TLS certificate verification is disabled")
+		klog.Warning("Skipping TLS verification for Infoblox WAPI connection")
 	}
 
 	c.ibClient = connector
