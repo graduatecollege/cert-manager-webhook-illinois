@@ -9,7 +9,6 @@ certManager:
 
 image:
   repository: ghcr.io/graduatecollege/cert-manager-webhook-illinois
-  tag: latest
   pullPolicy: IfNotPresent
 
 podSecurityContext:
