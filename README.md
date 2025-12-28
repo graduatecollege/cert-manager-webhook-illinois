@@ -26,33 +26,17 @@ This is a cert-manager ACME DNS01 webhook solver for the Illinois Infoblox DNS s
      -n cert-manager
    ```
 
-2. Deploy the webhook with credential volume mounts:
-
-   The webhook deployment should mount the credentials secret as volume files. Update your
-   `deploy/example-webhook/templates/deployment.yaml` to include:
-
-   ```yaml
-   volumeMounts:
-     - name: infoblox-credentials
-       mountPath: /etc/infoblox
-       readOnly: true
-   volumes:
-     - name: infoblox-credentials
-       secret:
-         secretName: infoblox-credentials
-   ```
-
-3. Install the webhook:
+2. Install the webhook:
 
    ```bash
-   helm install infoblox-webhook ./deploy/example-webhook \
+   helm install ipam-webhook oci://ghcr.io/graduatecollege/charts/cert-manager-webhook-illinois \
      --namespace cert-manager \
-     --set groupName=ipam.illinois.edu
+     --set credentialsSecret=infoblox-credentials
    ```
 
 ### Issuer Configuration
 
-Create an Issuer or ClusterIssuer with the Infoblox webhook configuration:
+Create an Issuer or ClusterIssuer:
 
 ```yaml
 apiVersion: cert-manager.io/v1
@@ -72,8 +56,8 @@ spec:
             groupName: ipam.illinois.edu
             solverName: infoblox
             config:
-              host: ipam.illinois.edu
-              version: v2.12
+              host: dev.ipam.illinois.edu
+              version: 2.13.7
               view: default
               usernameFile: /etc/infoblox/username
               passwordFile: /etc/infoblox/password
@@ -83,8 +67,8 @@ spec:
 
 | Field           | Required | Default                | Description                                                           |
 |-----------------|----------|------------------------|-----------------------------------------------------------------------|
-| `host`          | Yes      | -                      | Infoblox WAPI host (e.g., ipam.illinois.edu or dev.ipam.illinois.edu) |
-| `version`       | No       | v2.12                  | Infoblox WAPI version                                                 |
+| `host`          | Yes      | -                      | Infoblox WAPI host  |
+| `version`       | No       | 2.13.7                 | Infoblox WAPI version                                                 |
 | `view`          | No       | default                | DNS view name                                                         |
 | `ttl`           | No       | 300                    | DNS record TTL in seconds                                             |
 | `usernameFile`  | No       | /etc/infoblox/username | Path to file containing username (mounted from secret)                |
