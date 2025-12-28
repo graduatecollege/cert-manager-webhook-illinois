@@ -7,7 +7,7 @@ This directory contains the configuration for the Infoblox DNS solver.
 The `config.json` file should contain:
 
 - `host`: The Infoblox WAPI host (e.g., ipam.illinois.edu or dev.ipam.illinois.edu)
-- `version`: The WAPI version (default: v2.12)
+- `version`: The WAPI version (default: 2.13.7)
 - `view`: The DNS view (default: default)
 - `usernameFile`: Path to the file containing the username (default: /etc/infoblox/username)
 - `passwordFile`: Path to the file containing the password (default: /etc/infoblox/password)
@@ -18,7 +18,7 @@ The `config.json` file should contain:
 ```json
 {
   "host": "ipam.illinois.edu",
-  "version": "v2.12",
+  "version": "2.13.7",
   "view": "default",
   "usernameFile": "/etc/infoblox/username",
   "passwordFile": "/etc/infoblox/password"

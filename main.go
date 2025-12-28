@@ -51,9 +51,9 @@ func (c *infobloxDNSProviderSolver) Name() string {
 }
 
 func (c *infobloxDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
-
-	klog.Infof("call function Present: namespace=%s, zone=%s, fqdn=%s",
-		ch.ResourceNamespace, ch.ResolvedZone, ch.ResolvedFQDN)
+	jsonData, err := json.Marshal(ch)
+	klog.Infof("call function Present: namespace=%s, zone=%s, fqdn=%s, key=%s, AllowAmbientCredentials=%t, Config=%v",
+		ch.ResourceNamespace, ch.ResolvedZone, ch.ResolvedFQDN, ch.Key, ch.AllowAmbientCredentials, string(jsonData))
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		klog.Errorf("error loading config: %v", err)
@@ -181,7 +181,7 @@ func loadConfig(cfgJSON *extapi.JSON) (infobloxDNSProviderConfig, error) {
 	}
 
 	if cfg.Version == "" {
-		cfg.Version = "v2.12"
+		cfg.Version = "2.13.7"
 	}
 	if cfg.View == "" {
 		cfg.View = "default"
@@ -230,8 +230,6 @@ func (c *infobloxDNSProviderSolver) getOrCreateClient(cfg infobloxDNSProviderCon
 		return fmt.Errorf("error getting credentials: %v", err)
 	}
 
-	klog.Infof("Found username %s", username)
-
 	hostConfig := ibclient.HostConfig{
 		Host:    cfg.Host,
 		Version: cfg.Version,
@@ -253,7 +251,6 @@ func (c *infobloxDNSProviderSolver) getOrCreateClient(cfg infobloxDNSProviderCon
 
 	connector, err := ibclient.NewConnector(hostConfig, authConfig, transportConfig, requestBuilder, requestor)
 	if err != nil {
-		klog.Errorf("error creating Infoblox connector: %v", err)
 		return fmt.Errorf("error creating Infoblox connector: %v", err)
 	}
 
