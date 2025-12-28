@@ -11,7 +11,7 @@ RUN go mod download
 
 FROM build_deps AS build
 
-COPY . .
+COPY *.go .
 
 RUN CGO_ENABLED=0 go build -o webhook -ldflags '-w -extldflags "-static"' .
 
@@ -21,7 +21,7 @@ RUN apk add --no-cache ca-certificates
 
 COPY --from=build /workspace/webhook /usr/local/bin/webhook
 
-RUN adduser -D -H -u 1000 app
-USER app
+RUN addgroup -g 1001 app && adduser -D -G app -u 1001 app
+USER 1001
 
 ENTRYPOINT ["webhook"]
