@@ -1,4 +1,4 @@
-{{- $defaultTag := print "v" .Chart.AppVersion -}}
+{{- $defaultTag := .Chart.AppVersion -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
