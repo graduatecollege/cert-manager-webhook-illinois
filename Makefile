@@ -4,7 +4,7 @@ ARCH ?= $(shell $(GO) env GOARCH)
 
 OUT := $(shell pwd)/_out
 
-KUBEBUILDER_VERSION=1.28.0
+KUBEBUILDER_VERSION=1.35.0
 
 HELM_FILES := $(shell find deploy/illinois-infoblox-webhook)
 
