@@ -97,9 +97,9 @@ TEST_ZONE_NAME=grad.illinois.edu. make test
 This product is supported by the Graduate College on a best-effort basis.
 
 As of the last update to this README, the expected End-of-Life and End-of-Support dates 
-of this product are 2026-07-09.
+of this product are approximately 2026-10-24.
 
 End-of-Life was decided upon based on these dependencies:
 
-- cert-manager 1.19 (2026-07-09)
-- go 1.25 (2026-08-12)
+- cert-manager 1.20 (~2026-10-24, EOL at release of 1.22)
+- go 1.26 (~2027-02-01)
