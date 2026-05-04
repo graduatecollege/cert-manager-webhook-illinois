@@ -1,0 +1,34 @@
+name: 'Helm Package and Push'
+description: 'Sets up Helm, packages the chart, and pushes to GHCR'
+inputs:
+  chart-path:
+    description: 'Path to the Helm chart'
+    required: true
+  version:
+    description: 'Version of the chart'
+    required: true
+  image-name:
+    description: 'Image name for the chart'
+    required: true
+  owner:
+    description: 'GitHub repository owner'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Helm
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # ratchet:azure/setup-helm@v5
+      with:
+        version: 'latest'
+
+    - name: Package and push Helm chart
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+        VERSION: ${{ inputs.version }}
+        IMAGE_NAME: ${{ inputs.image-name }}
+        OWNER: ${{ inputs.owner }}
+      run: |
+        helm package "$CHART_PATH" --version "$VERSION" --app-version "$VERSION"
+        helm push "$IMAGE_NAME-$VERSION.tgz" oci://ghcr.io/$OWNER/charts

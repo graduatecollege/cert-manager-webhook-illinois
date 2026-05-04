@@ -5,25 +5,15 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: read
-  packages: write
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # ratchet:actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Log in to GHCR
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # ratchet:docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set Environment Variables
         run: |
@@ -32,31 +22,18 @@ jobs:
           echo "IMAGE_NAME=${GITHUB_REPOSITORY#*/}" >> ${GITHUB_ENV}
           echo "VERSION=${GITHUB_REF#refs/tags/v}" >> ${GITHUB_ENV}
 
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # ratchet:docker/metadata-action@v5
+      - name: Docker Build and Push
+        uses: ./.github/actions/docker-build-push
         with:
-          images: ghcr.io/${{ env.REPO_FULL }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+          image-name: ${{ env.REPO_FULL }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # ratchet:docker/build-push-action@v5
+      - name: Helm Package and Push
+        uses: ./.github/actions/helm-package-push
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Install Helm
-        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # ratchet:azure/setup-helm@v4
-
-      - name: Package and push Helm chart
-        run: |
-          helm package helm --version "${VERSION}" --app-version "${VERSION}"
-          helm push "${IMAGE_NAME}-${VERSION}.tgz" oci://ghcr.io/${OWNER}/charts
+          chart-path: helm
+          version: ${{ env.VERSION }}
+          image-name: ${{ env.IMAGE_NAME }}
+          owner: ${{ env.OWNER }}
 
   create-release:
     runs-on: ubuntu-latest
