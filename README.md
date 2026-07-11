@@ -101,5 +101,5 @@ of this product are approximately 2026-10-24.
 
 End-of-Life was decided upon based on these dependencies:
 
-- cert-manager 1.20 (~2026-10-24, EOL at release of 1.22)
+- cert-manager 1.21 (~2027-01-24, EOL at release of 1.23)
 - go 1.26 (~2027-02-01)
